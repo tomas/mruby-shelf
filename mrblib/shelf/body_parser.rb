@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) Sebastian Katzer 2017
+# Copyright (c) Tomas Pollak 2019
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -20,17 +20,42 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-MRuby::Gem::Specification.new('mruby-shelf') do |spec|
-  spec.license = 'MIT'
-  spec.authors = 'Sebastian Katzer'
-  spec.summary = 'Modular webserver interface'
+module Shelf
+  # Parse the query and put the params into the shelf.request.body_hash.
+  class BodyParser
 
-  spec.add_dependency 'mruby-r3',  mgem: 'mruby-r3'
-  spec.add_dependency 'mruby-env', mgem: 'mruby-env'
-  spec.add_dependency 'mruby-json', mgem: 'mruby-json'
+    TYPE_HEADER    = 'CONTENT_TYPE'.freeze # not Content-Type
+    RACK_INPUT     = 'rack.input'.freeze
+    JSON_TYPE      = 'application/json'.freeze
+    FORM_DATA_TYPE = 'application/x-www-form-urlencoded'.freeze
 
-  spec.add_test_dependency 'mruby-sprintf', core: 'mruby-sprintf'
-  spec.add_test_dependency 'mruby-print',   core: 'mruby-print'
-  spec.add_test_dependency 'mruby-time',    core: 'mruby-time'
-  spec.add_test_dependency 'mruby-io',      core: 'mruby-io'
+    def initialize(app)
+      @app = app
+    end
+
+    def call(env)
+      parse_body(env) if env[RACK_INPUT] && env[SHELF_REQUEST_BODY_HASH].nil?
+      @app.call(env)
+    end
+
+    private
+
+    def parse_body(env)
+      stream = env[RACK_INPUT]
+      env[SHELF_REQUEST_BODY_HASH] = case env[TYPE_HEADER]
+      when JSON_TYPE
+        parse_json(stream.read)
+      when FORM_DATA_TYPE
+        QueryParser.parse(stream.read)
+      else
+        {} # so we don't run this twice 
+      end
+    end
+
+    def parse_json(str)
+      JSON.parse(str)
+    rescue JSON::ParserError
+      {}
+    end
+  end
 end

@@ -23,12 +23,27 @@
 module Shelf
   # Parse the query and put the params into the shelf.request.query_hash.
   class QueryParser
+
+    def self.parse(str, target = {})
+      str.split('&').each do |p|
+        next if p.empty?
+        k, v = p.split('=', 2)
+
+        case (item = target[k])
+        when Array then item << v
+        when nil   then target[k] = v
+        else            target[k] = [item, v]
+        end
+      end
+      target
+    end
+
     def initialize(app)
       @app = app
     end
 
     def call(env)
-      parse_query(env) if env[QUERY_STRING]
+      parse_query(env) if env[QUERY_STRING] # && !env[SHELF_REQUEST_QUERY_HASH]
       @app.call(env)
     end
 
@@ -36,17 +51,7 @@ module Shelf
 
     def parse_query(env)
       params = env[SHELF_REQUEST_QUERY_HASH] ||= {}
-
-      env[QUERY_STRING].split('&').each do |p|
-        next if p.empty?
-        k, v = p.split('=', 2)
-
-        case (item = params[k])
-        when Array then item << v
-        when nil   then params[k] = v
-        else            params[k] = [item, v]
-        end
-      end
+      self.class.parse(env[QUERY_STRING], params)
     end
   end
 end
