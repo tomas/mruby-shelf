@@ -21,17 +21,16 @@
 # SOFTWARE.
 
 class FakeInput
-	attr_accessor :read
+	attr_reader :read
+	def initialize(read); @read = read; end
 end
 
 def env_for(path: '/', method: 'GET', query: '', body: '', type: Shelf::BodyParser::FORM_DATA_TYPE)
-	input = FakeInput.new
-	input.read = body
   { 'REQUEST_METHOD' => method, 
   	'PATH_INFO' => path, 
   	'QUERY_STRING' => query, 
   	'CONTENT_TYPE' => type, 
-  	'rack.input' => input }
+  	'rack.input' => body.nil? ? nil : FakeInput.new(body) }
 end
 
 assert 'Shelf::BodyParser' do
@@ -44,6 +43,11 @@ assert 'Shelf::BodyParser' do
 
   _, params, = app.call(env_for(path: '/'))
   assert_kind_of Hash, params
+  assert_equal [], params.keys
+
+  _, params, = app.call(env_for(path: '/', body: nil)) # no rack.input
+  assert_kind_of Hash, params
+  assert_equal [], params.keys
 
   _, params, = app.call(env_for(body: 'id=2'))
   assert_equal nil, params[:id]

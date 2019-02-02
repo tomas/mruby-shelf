@@ -34,7 +34,9 @@ module Shelf
     end
 
     def call(env)
-      parse_body(env) if env[RACK_INPUT] && env[SHELF_REQUEST_BODY_HASH].nil?
+      if env[SHELF_REQUEST_BODY_HASH].nil?
+        env[SHELF_REQUEST_BODY_HASH] = env[RACK_INPUT].nil? ? {} : parse_body(env)
+      end
       @app.call(env)
     end
 
@@ -42,7 +44,7 @@ module Shelf
 
     def parse_body(env)
       stream = env[RACK_INPUT]
-      env[SHELF_REQUEST_BODY_HASH] = case env[TYPE_HEADER]
+      case env[TYPE_HEADER]
       when JSON_TYPE
         parse_json(stream.read)
       when FORM_DATA_TYPE
