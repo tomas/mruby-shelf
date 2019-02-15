@@ -20,11 +20,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-def env_for(path: '/', method: 'GET', query: '', body: '', type: Shelf::BodyParser::FORM_DATA_TYPE)
+def env_for(path: '/', method: 'GET', query: '', body: '', type: Shelf::BodyParser::FORM_DATA_TYPE, length: nil)
   { 'REQUEST_METHOD' => method, 
   	'PATH_INFO' => path, 
   	'QUERY_STRING' => query, 
   	'CONTENT_TYPE' => type, 
+    'CONTENT_LENGTH' => length,
   	'rack.input' => body.nil? ? nil : InputStream.new(body) }
 end
 
@@ -68,28 +69,33 @@ assert 'Shelf::BodyParser' do
   assert_equal 123,  params['foo']
 
 multipart_body = %{
------------------------------9051914041544843365972754266
-Content-Disposition: form-data; name="text"
+--AaB03x
+Content-Disposition: form-data; name="foo"
 
-text default
------------------------------9051914041544843365972754266
-Content-Disposition: form-data; name="file1"; filename="a.txt"
+bar
+--AaB03x
+Content-Disposition: form-data; name="files"
+Content-Type: multipart/mixed, boundary=BbC04y
+
+--BbC04y
+Content-Disposition: attachment; filename="file.txt"
 Content-Type: text/plain
 
-Content of a.txt.
+contents
+--BbC04y
+Content-Disposition: attachment; filename="flowers.jpg"
+Content-Type: image/jpeg
+Content-Transfer-Encoding: binary
 
------------------------------9051914041544843365972754266
-Content-Disposition: form-data; name="file2"; filename="a.html"
-Content-Type: text/html
+contents
+--BbC04y--
+--AaB03x--
+}.strip
 
-<!DOCTYPE html><title>Content of a.html.</title>
+multipart_type = 'multipart/form-data; boundary=--AaB03x'
+length = multipart_body.bytesize # 540
 
------------------------------9051914041544843365972754266--
-}
-
-multipart_type = 'multipart/form-data; boundary=---------------------------9051914041544843365972754266'
-
-   _, params = app.call(env_for(body: multipart_body, type: multipart_type))
+   _, params = app.call(env_for(body: multipart_body, length: length, type: multipart_type))
    assert_equal 123,  params['foo']
 end
 
