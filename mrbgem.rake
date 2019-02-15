@@ -20,6 +20,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+class MRuby::Gem::LinkerConfig
+  def defines
+    @defines ||= []
+  end
+end
+
 MRuby::Gem::Specification.new('mruby-shelf') do |spec|
   spec.license = 'MIT'
   spec.authors = 'Sebastian Katzer'
@@ -28,7 +34,9 @@ MRuby::Gem::Specification.new('mruby-shelf') do |spec|
   spec.add_dependency 'mruby-r3',  mgem: 'mruby-r3'
   spec.add_dependency 'mruby-env', mgem: 'mruby-env'
   spec.add_dependency 'mruby-json', mgem: 'mruby-json'
+  spec.add_dependency 'mruby-regexp-pcre', mgem: 'mruby-regexp-pcre'
 
+  spec.add_test_dependency 'mruby-input-stream', github: 'takahashim/mruby-input-stream'
   spec.add_test_dependency 'mruby-sprintf', core: 'mruby-sprintf'
   spec.add_test_dependency 'mruby-print',   core: 'mruby-print'
   spec.add_test_dependency 'mruby-time',    core: 'mruby-time'

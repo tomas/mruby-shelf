@@ -20,17 +20,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-class FakeInput
-	attr_reader :read
-	def initialize(read); @read = read; end
-end
-
 def env_for(path: '/', method: 'GET', query: '', body: '', type: Shelf::BodyParser::FORM_DATA_TYPE)
   { 'REQUEST_METHOD' => method, 
   	'PATH_INFO' => path, 
   	'QUERY_STRING' => query, 
   	'CONTENT_TYPE' => type, 
-  	'rack.input' => body.nil? ? nil : FakeInput.new(body) }
+  	'rack.input' => body.nil? ? nil : InputStream.new(body) }
 end
 
 assert 'Shelf::BodyParser' do
@@ -71,4 +66,30 @@ assert 'Shelf::BodyParser' do
 
   _, params, = app.call(env_for(body: '{ "foo": 123 }', type: 'application/json')) # invalid type
   assert_equal 123,  params['foo']
+
+multipart_body = %{
+-----------------------------9051914041544843365972754266
+Content-Disposition: form-data; name="text"
+
+text default
+-----------------------------9051914041544843365972754266
+Content-Disposition: form-data; name="file1"; filename="a.txt"
+Content-Type: text/plain
+
+Content of a.txt.
+
+-----------------------------9051914041544843365972754266
+Content-Disposition: form-data; name="file2"; filename="a.html"
+Content-Type: text/html
+
+<!DOCTYPE html><title>Content of a.html.</title>
+
+-----------------------------9051914041544843365972754266--
+}
+
+multipart_type = 'multipart/form-data; boundary=---------------------------9051914041544843365972754266'
+
+   _, params = app.call(env_for(body: multipart_body, type: multipart_type))
+   assert_equal 123,  params['foo']
 end
+

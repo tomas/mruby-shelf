@@ -28,6 +28,7 @@ module Shelf
     RACK_INPUT     = 'rack.input'.freeze
     JSON_TYPE      = 'application/json'.freeze
     FORM_DATA_TYPE = 'application/x-www-form-urlencoded'.freeze
+    MULTIPART_TYPE = 'multipart/form-data'.freeze
 
     def initialize(app)
       @app = app
@@ -49,6 +50,8 @@ module Shelf
         parse_json(stream.read)
       when FORM_DATA_TYPE
         QueryParser.parse(stream.read)
+      when /^#{MULTIPART_TYPE}/
+        Multipart.parse(stream, env)
       else
         {} # so we don't run this twice 
       end
