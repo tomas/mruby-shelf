@@ -3,443 +3,438 @@ module Shelf
   module Multipart
 
     CONTENT_TYPE = 'CONTENT_TYPE'.freeze
-    RACK_MULTIPART_BUFFER_SIZE          = 'rack.multipart.buffer_size'
-    RACK_MULTIPART_TEMPFILE_FACTORY     = 'rack.multipart.tempfile_factory'
-    RACK_TEMPFILES = 'rack.tempfiles'
+    # RACK_MULTIPART_BUFFER_SIZE          = 'rack.multipart.buffer_size'
+    # RACK_MULTIPART_TEMPFILE_FACTORY     = 'rack.multipart.tempfile_factory'
+    # RACK_TEMPFILES = 'rack.tempfiles'
+
+    CHUNK_SIZE = 8192.freeze
+    BOUNDARY_REGEX = %r|\Amultipart/.*boundary=\"?([^\";,]+)\"?|i
 
     def self.parse(io, env)
       params = nil
 
+      boundary = env[CONTENT_TYPE][BOUNDARY_REGEX, 1]
+      return nil unless boundary
+
+      # puts "Initializing with boundary: #{boundary}"
+      parts, reader = {}, Reader.new(boundary)
+
+      reader.on_error do |err|
+        on_error_called = true
+      end
+
+      reader.on_part do |part|
+        part_entry = {:part => part, :data => '', :ended => false}
+        parts[part.name] = part_entry
+
+        part.on_data do |data|
+          part_entry[:data] << data
+        end
+
+        part.on_end do
+          part_entry[:ended] = true
+        end
+      end
+
       io.rewind
-      content_length = env[CONTENT_LENGTH]
-      content_length = content_length.to_i if content_length
+      while bytes = io.read(CHUNK_SIZE)
+        # puts "Writing bytes: #{bytes.length}"
+        reader.write(bytes)
+      end
 
-      tempfile = env[RACK_MULTIPART_TEMPFILE_FACTORY] || Parser::TEMPFILE_FACTORY
-      bufsize = env[RACK_MULTIPART_BUFFER_SIZE] || Parser::BUFSIZE
-
-      info = Parser.parse(io, content_length, env[CONTENT_TYPE], tempfile, bufsize, params)
-      env[RACK_TEMPFILES] = info.tmp_files
-      # info.params
-
-      {}
+      parts
     end
 
-    # class MultipartPartLimitError < Errno::EMFILE; end
-    class MultipartPartLimitError < StandardError; end
-
+    # A low level parser for multipart messages,
+    # based on the node-formidable parser.
     class Parser
 
-      EOL = "\r\n"
-      MULTIPART_BOUNDARY = "AaB03x"
-      MULTIPART = %r|\Amultipart/.*boundary=\"?([^\";,]+)\"?|i
-      # MULTIPART = /\Amultipart\/.*boundary=\"?([^\";,]+)\"?/
+      def initialize
+        @boundary = nil
+        @boundary_chars = nil
+        @lookbehind = nil
+        @state = :parser_uninitialized
+        @index = 0  # Index into boundary or header
+        @flags = {}
+        @marks = {} # Keep track of different parts
+        @callbacks = {}
+      end
 
-      TOKEN = /[^\s()<>,;:\\"\/\[\]?=]+/
-      CONDISP = /Content-Disposition:\s*#{TOKEN}\s*/i
-      VALUE = /"(?:\\"|[^"])*"|#{TOKEN}/
-      BROKEN_QUOTED = /^#{CONDISP}.*;\sfilename="(.*?)"(?:\s*$|\s*;\s*#{TOKEN}=)/i
-      BROKEN_UNQUOTED = /^#{CONDISP}.*;\sfilename=(#{TOKEN})/i
-      MULTIPART_CONTENT_TYPE = /Content-Type: (.*)#{EOL}/i
-      MULTIPART_CONTENT_DISPOSITION = /Content-Disposition:.*\s+name=(#{VALUE})/i
-      MULTIPART_CONTENT_ID = /Content-ID:\s*([^#{EOL}]*)/i
+      # Initializes the parser, using the given boundary
+      def init_with_boundary(boundary)
+        @boundary = "\r\n--" + boundary
+        @lookbehind = "\0"*(@boundary.length + 8)
+        @state = :start
 
-      # Updated definitions from RFC 2231
-      ATTRIBUTE_CHAR = %r{[^ \t\v\n\r)(><@,;:\\"/\[\]?='*%]}
-      ATTRIBUTE = /#{ATTRIBUTE_CHAR}+/
-      SECTION = /\*[0-9]+/
-      REGULAR_PARAMETER_NAME = /#{ATTRIBUTE}#{SECTION}?/
-      REGULAR_PARAMETER = /(#{REGULAR_PARAMETER_NAME})=(#{VALUE})/
-      EXTENDED_OTHER_NAME = /#{ATTRIBUTE}\*[1-9][0-9]*\*/
-      EXTENDED_OTHER_VALUE = /%[0-9a-fA-F]{2}|#{ATTRIBUTE_CHAR}/
-      EXTENDED_OTHER_PARAMETER = /(#{EXTENDED_OTHER_NAME})=(#{EXTENDED_OTHER_VALUE}*)/
-      EXTENDED_INITIAL_NAME = /#{ATTRIBUTE}(?:\*0)?\*/
-      EXTENDED_INITIAL_VALUE = /[a-zA-Z0-9\-]*'[a-zA-Z0-9\-]*'#{EXTENDED_OTHER_VALUE}*/
-      EXTENDED_INITIAL_PARAMETER = /(#{EXTENDED_INITIAL_NAME})=(#{EXTENDED_INITIAL_VALUE})/
-      EXTENDED_PARAMETER = /#{EXTENDED_INITIAL_PARAMETER}|#{EXTENDED_OTHER_PARAMETER}/
-      DISPPARM = /;\s*(?:#{REGULAR_PARAMETER}|#{EXTENDED_PARAMETER})\s*/
-      RFC2183 = /^#{CONDISP}(#{DISPPARM})+$/i
-
-      MULTIPART_PART_LIMIT = 0
-
-
-      BUFSIZE = 1_048_576
-      TEXT_PLAIN = "text/plain"
-      TEMPFILE_FACTORY = lambda { |filename, content_type|
-        Tempfile.new(["RackMultipart", ::File.extname(filename.gsub("\0".freeze, '%00'.freeze))])
-      }
-
-      class BoundedIO # :nodoc:
-        def initialize(io, content_length)
-          @io             = io
-          @content_length = content_length
-          @cursor = 0
+        @boundary_chars = {}
+        @boundary.each_byte do |b|
+          @boundary_chars[b.chr] = true
         end
+      end
 
-        def read(size)
-          return if @cursor >= @content_length
+      # Registers a callback to be called when the
+      # given event occurs. Each callback is expected to
+      # take three parameters: buffer, start_index, and end_index.
+      # All of these parameters may be null, depending on the callback.
+      # Valid callbacks are:
+      # :end
+      # :header_field
+      # :header_value
+      # :header_end
+      # :headers_end
+      # :part_begin
+      # :part_data
+      # :part_end
+      def on(event, &callback)
+        @callbacks[event] = callback
+      end
 
-          left = @content_length - @cursor
+      # Writes data to the parser.
+      # Returns the number of bytes parsed.
+      # In practise, this means that if the return value
+      # is less than the buffer length, a parse error occured.
+      def write(buffer)
+        i = 0
+        buffer_length = buffer.length
+        index = @index
+        flags = @flags.dup
+        state = @state
+        lookbehind = @lookbehind
+        boundary = @boundary
+        boundary_chars = @boundary_chars
+        boundary_length = @boundary.length
+        boundary_end = boundary_length - 1
 
-          str = if left < size
-                  @io.read left
-                else
-                  @io.read size
+        while i < buffer_length
+          c = buffer[i, 1]
+          case state
+            when :parser_uninitialized
+              return i;
+            when :start
+              index = 0;
+              state = :start_boundary
+            when :start_boundary # Differs in that it has no preceeding \r\n
+              if index == boundary_length - 2
+                return i unless c == "\r"
+                index += 1
+              elsif index - 1 == boundary_length - 2
+                return i unless c == "\n"
+                # Boundary read successfully, begin next part
+                callback(:part_begin)
+                state = :header_field_start
+              else
+                return i unless c == boundary[index+2, 1] # Unexpected character
+                index += 1
+              end
+              i += 1
+            when :header_field_start
+              state = :header_field
+              @marks[:header_field] = i
+              index = 0
+            when :header_field
+              if c == "\r"
+                @marks.delete :header_field
+                state = :headers_almost_done
+              else
+                index += 1
+                unless c == "-" # Skip hyphens
+                  if c == ":"
+                    return i if index == 1 # Empty header field
+                    data_callback(:header_field, buffer, i, :clear => true)
+                    state = :header_value_start
+                  else
+                    cl = c.downcase
+                    return i if cl < "a" || cl > "z"
+                  end
                 end
+              end
+              i += 1
+            when :header_value_start
+              if c == " " # Skip spaces
+                i += 1
+              else
+                @marks[:header_value] = i
+                state = :header_value
+              end
+            when :header_value
+              if c == "\r"
+                data_callback(:header_value, buffer, i, :clear => true)
+                callback(:header_end)
+                state = :header_value_almost_done
+              end
+              i += 1
+            when :header_value_almost_done
+              return i unless c == "\n"
+              state = :header_field_start
+              i += 1
+            when :headers_almost_done
+              return i unless c == "\n"
+              callback(:headers_end)
+              state = :part_data_start
+              i += 1
+            when :part_data_start
+              state = :part_data
+              @marks[:part_data] = i
+            when :part_data
+              prev_index = index
 
-          if str
-            @cursor += str.bytesize
-          else
-            # Raise an error for mismatching Content-Length and actual contents
-            raise EOFError, "bad content body"
-          end
+              if index == 0
+                # Boyer-Moore derived algorithm to safely skip non-boundary data
+                # See http://debuggable.com/posts/parsing-file-uploads-at-500-
+                # mb-s-with-node-js:4c03862e-351c-4faa-bb67-4365cbdd56cb
+                while i + boundary_length <= buffer_length
+                  break if boundary_chars.has_key? buffer[i + boundary_end].chr
+                  i += boundary_length
+                end
+                c = buffer[i, 1]
+              end
 
-          str
-        end
+              if index < boundary_length
+                if boundary[index, 1] == c
+                  if index == 0
+                    data_callback(:part_data, buffer, i, :clear => true)
+                  end
+                  index += 1
+                else # It was not the boundary we found, after all
+                  index = 0
+                end
+              elsif index == boundary_length
+                index += 1
+                if c == "\r"
+                  flags[:part_boundary] = true
+                elsif c == "-"
+                  flags[:last_boundary] = true
+                else # We did not find a boundary after all
+                  index = 0
+                end
+              elsif index - 1 == boundary_length
+                if flags[:part_boundary]
+                  index = 0
+                  if c == "\n"
+                    flags.delete :part_boundary
+                    callback(:part_end)
+                    callback(:part_begin)
+                    state = :header_field_start
+                    i += 1
+                    next # Ugly way to break out of the case statement
+                  end
+                elsif flags[:last_boundary]
+                  if c == "-"
+                    callback(:part_end)
+                    callback(:end)
+                    state = :end
+                  else
+                    index = 0 # False alarm
+                  end
+                else
+                  index = 0
+                end
+              end
 
-        def rewind
-          @io.rewind
-        end
-      end
+              if index > 0
+                # When matching a possible boundary, keep a lookbehind
+                # reference in case it turns out to be a false lead
+                lookbehind[index-1] = c
+              elsif prev_index > 0
+                # If our boundary turns out to be rubbish,
+                # the captured lookbehind belongs to part_data
+                callback(:part_data, lookbehind, 0, prev_index)
+                @marks[:part_data] = i
 
-      class MultipartInfo
-        attr_reader :params, :tmp_files
-        def initialize(params, tmp_files)
-          @params, @tmp_files = params, tmp_files
-        end
-      end
+                # Reconsider the current character as it might be the
+                # beginning of a new sequence.
+                i -= 1
+              end
 
-      # MultipartInfo = Struct.new :params, :tmp_files
-      EMPTY         = MultipartInfo.new(nil, [])
-
-      def self.parse_boundary(content_type)
-        return unless content_type
-        data = content_type.match(MULTIPART)
-        return unless data
-        data[1]
-      end
-
-      def self.parse(io, content_length, content_type, tmpfile, bufsize, qp)
-        return EMPTY if 0 == content_length
-
-        boundary = parse_boundary content_type
-        return EMPTY unless boundary
-
-        io = BoundedIO.new(io, content_length) if content_length
-
-        parser = new(boundary, tmpfile, bufsize, qp)
-        parser.on_read io.read(bufsize)
-
-        loop do
-          break if parser.state == :DONE
-          parser.on_read io.read(bufsize)
-        end
-
-        io.rewind
-        parser.result
-      end
-
-      class Collector
-        class MimePart
-          attr_reader :body, :head, :filename, :content_type, :name
-          def initialize(body, head, filename, content_type, name)
-            @body, @head, @filename, @content_type, @name = body, head, filename, content_type, name
-          end
-
-          def get_data
-            data = body
-            if filename == ""
-              # filename is blank which means no file has been selected
-              return
-            elsif filename
-              body.rewind if body.respond_to?(:rewind)
-
-              # Take the basename of the upload's original filename.
-              # This handles the full Windows paths given by Internet Explorer
-              # (and perhaps other broken user agents) without affecting
-              # those which give the lone filename.
-              fn = filename.split(/[\/\\]/).last
-
-              data = { filename: fn, type: content_type,
-                      name: name, tempfile: body, head: head }
-            elsif !filename && content_type && body.is_a?(IO)
-              body.rewind
-
-              # Generic multipart cases, not coming from a form
-              data = { type: content_type,
-                      name: name, tempfile: body, head: head }
-            end
-
-            yield data
-          end
-        end
-
-        class BufferPart < MimePart
-          def file?; false; end
-          def close; end
-        end
-
-        class TempfilePart < MimePart
-          def file?; true; end
-          def close; body.close; end
-        end
-
-        include Enumerable
-
-        def initialize tempfile
-          @tempfile = tempfile
-          @mime_parts = []
-          @open_files = 0
-        end
-
-        def each
-          @mime_parts.each { |part| yield part }
-        end
-
-        def on_mime_head mime_index, head, filename, content_type, name
-          if filename
-            body = @tempfile.call(filename, content_type)
-            body.binmode if body.respond_to?(:binmode)
-            klass = TempfilePart
-            @open_files += 1
-          else
-            body = String.new
-            klass = BufferPart
-          end
-
-          @mime_parts[mime_index] = klass.new(body, head, filename, content_type, name)
-          check_open_files
-        end
-
-        def on_mime_body mime_index, content
-          @mime_parts[mime_index].body << content
-        end
-
-        def on_mime_finish mime_index
-        end
-
-        private
-
-        def check_open_files
-          if MULTIPART_PART_LIMIT > 0
-            if @open_files >= MULTIPART_PART_LIMIT
-              @mime_parts.each(&:close)
-              raise MultipartPartLimitError, 'Maximum file multiparts in content reached'
-            end
-          end
-        end
-      end
-
-      attr_reader :state
-
-      def initialize(boundary, tempfile, bufsize, query_parser)
-        @buf            = String.new
-
-        # @query_parser   = query_parser
-        # @params         = query_parser.make_params
-        # @boundary       = "--#{boundary}"
-        @boundary       = boundary
-        @bufsize        = bufsize
-
-        @rx = /(?:#{EOL})?#{Regexp.quote(@boundary)}(#{EOL}|--)/n
-        @rx_max_size = EOL.size + @boundary.bytesize + [EOL.size, '--'.size].max
-
-        @full_boundary = @boundary
-
-        @end_boundary = @boundary + '--'
-        @state = :FAST_FORWARD
-        @mime_index = 0
-        @collector = Collector.new tempfile
-      end
-
-      def on_read content
-        handle_empty_content!(content)
-        @buf << content
-        run_parser
-      end
-
-      def result
-        @collector.each do |part|
-          part.get_data do |data|
-            tag_multipart_encoding(part.filename, part.content_type, part.name, data)
-            # @query_parser.normalize_params(@params, part.name, data, @query_parser.param_depth_limit)
+              i += 1
+            when :end
+              i += 1
+            else
+              return i;
           end
         end
 
-        # MultipartInfo.new @params.to_params_hash, @collector.find_all(&:file?).map(&:body)
-        MultipartInfo.new nil, @collector.find_all(&:file?).map(&:body)
+        data_callback(:header_field, buffer, buffer_length)
+        data_callback(:header_value, buffer, buffer_length)
+        data_callback(:part_data, buffer, buffer_length)
+
+        @index = index
+        @state = state
+        @flags = flags
+
+        return buffer_length
       end
 
       private
 
-      def run_parser
-        loop do
-          case @state
-          when :FAST_FORWARD
-            break if handle_fast_forward == :want_read
-          when :CONSUME_TOKEN
-            break if handle_consume_token == :want_read
-          when :MIME_HEAD
-            break if handle_mime_head == :want_read
-          when :MIME_BODY
-            break if handle_mime_body == :want_read
-          when :DONE
-            break
-          end
+      # Issues a callback.
+      def callback(event, buffer = nil, start = nil, the_end = nil)
+        return if !start.nil? && start == the_end
+        if @callbacks.has_key? event
+          @callbacks[event].call(buffer, start, the_end)
         end
       end
 
-      def handle_fast_forward
-        if consume_boundary
-          @state = :MIME_HEAD
+      # Issues a data callback,
+      # The only valid options is :clear,
+      # which, if true, will reset the appropriate mark to 0,
+      # If not specified, the mark will be removed.
+      def data_callback(data_type, buffer, the_end, options = {})
+        return unless @marks.has_key? data_type
+        callback(data_type, buffer, @marks[data_type], the_end)
+        unless options[:clear]
+          @marks[data_type] = 0
         else
-          raise EOFError, "bad content body" if @buf.bytesize >= @bufsize
-          :want_read
+          @marks.delete data_type
+        end
+      end
+    end
+
+    class NotMultipartError < StandardError; end;
+
+    # A more high level interface to MultipartParser.
+    class Reader
+
+      # Initializes a MultipartReader, that will
+      # read a request with the given boundary value.
+      def initialize(boundary)
+        @parser = Parser.new
+        @parser.init_with_boundary(boundary)
+        @header_field = ''
+        @header_value = ''
+        @part = nil
+        @ended = false
+        @on_error = nil
+        @on_part = nil
+
+        init_parser_callbacks
+      end
+
+      # Returns true if the parser has finished parsing
+      def ended?
+        @ended
+      end
+
+      # Sets to a code block to call
+      # when part headers have been parsed.
+      def on_part(&callback)
+        @on_part = callback
+      end
+
+      # Sets a code block to call when
+      # a parser error occurs.
+      def on_error(&callback)
+        @on_error = callback
+      end
+
+      # Write data from the given buffer (String)
+      # into the reader.
+      def write(buffer)
+        bytes_parsed = @parser.write(buffer)
+        if bytes_parsed != buffer.size
+          msg = "Parser error, #{bytes_parsed} of #{buffer.length} bytes parsed"
+          @on_error.call(msg) unless @on_error.nil?
         end
       end
 
-      def handle_consume_token
-        tok = consume_boundary
-        # break if we're at the end of a buffer, but not if it is the end of a field
-        if tok == :END_BOUNDARY || (@buf.empty? && tok != :BOUNDARY)
-          @state = :DONE
-        else
-          @state = :MIME_HEAD
-        end
-      end
-
-      def handle_mime_head
-        if @buf.index(EOL + EOL)
-          i = @buf.index(EOL + EOL)
-          head = @buf.slice!(0, i + 2) # First \r\n
-          @buf.slice!(0, 2)          # Second \r\n
-
-          content_type = head[MULTIPART_CONTENT_TYPE, 1]
-          if name = head[MULTIPART_CONTENT_DISPOSITION, 1]
-            name = Rack::Auth::Digest::Params::dequote(name)
+      # Extracts a boundary value from a Content-Type header.
+      # Note that it is the header value you provide here.
+      # Raises NotMultipartError if content_type is invalid.
+      def self.extract_boundary_value(content_type)
+        if content_type =~ /multipart/i
+          if match = (content_type =~ /boundary=(?:"([^"]+)"|([^;]+))/i)
+            $1 || $2
           else
-            name = head[MULTIPART_CONTENT_ID, 1]
+            raise NotMultipartError.new("No multipart boundary")
           end
-
-          filename = get_filename(head)
-
-          if name.nil? || name.empty?
-            name = filename || "#{content_type || TEXT_PLAIN}[]".dup
-          end
-
-          @collector.on_mime_head @mime_index, head, filename, content_type, name
-          @state = :MIME_BODY
         else
-          :want_read
+          raise NotMultipartError.new("Not a multipart content type!")
         end
       end
 
-      def handle_mime_body
-        if i = @buf.index(rx)
-          # Save the rest.
-          @collector.on_mime_body @mime_index, @buf.slice!(0, i)
-          @buf.slice!(0, 2) # Remove \r\n after the content
-          @state = :CONSUME_TOKEN
-          @mime_index += 1
-        else
-          # Save the read body part.
-          if @rx_max_size < @buf.size
-            @collector.on_mime_body @mime_index, @buf.slice!(0, @buf.size - @rx_max_size)
-          end
-          :want_read
+      class Part
+        attr_accessor :filename, :headers, :name, :mime
+
+        def initialize
+          @headers = {}
+          @data_callback = nil
+          @end_callback = nil
+        end
+
+        # Calls the data callback with the given data
+        def emit_data(data)
+          @data_callback.call(data) unless @data_callback.nil?
+        end
+
+        # Calls the end callback
+        def emit_end
+          @end_callback.call unless @end_callback.nil?
+        end
+
+        # Sets a block to be called when part data
+        # is read. The block should take one parameter,
+        # namely the read data.
+        def on_data(&callback)
+          @data_callback = callback
+        end
+
+        # Sets a block to be called when all data
+        # for the part has been read.
+        def on_end(&callback)
+          @end_callback = callback
         end
       end
 
-      def full_boundary; @full_boundary; end
+      private
 
-      def rx; @rx; end
-
-      def consume_boundary
-        puts @buf.match(/\A([^\n]*(?:\n|\Z))/)
-        while @buf.gsub!(/\A([^\n]*(?:\n|\Z))/, '')
-          read_buffer = $1
-          puts read_buffer.inspect
-          case read_buffer.strip
-          when full_boundary then 
-            # puts "BOUNDARY"
-            return :BOUNDARY
-          when @end_boundary then 
-            # puts "END_BOUNDARY"
-            return :END_BOUNDARY
-          else
-            # puts "WTF"
-          end
-          return if @buf.empty?
-        end
-      end
-
-      def get_filename(head)
-        filename = nil
-        case head
-        when RFC2183
-          params = Hash[*head.scan(DISPPARM).flat_map(&:compact)]
-
-          if filename = params['filename']
-            filename = $1 if filename =~ /^"(.*)"$/
-          elsif filename = params['filename*']
-            encoding, _, filename = filename.split("'", 3)
-          end
-        when BROKEN_QUOTED, BROKEN_UNQUOTED
-          filename = $1
+      def init_parser_callbacks
+        @parser.on(:part_begin) do
+          @part = Part.new
+          @header_field = ''
+          @header_value = ''
         end
 
-        return unless filename
-
-        if filename.scan(/%.?.?/).all? { |s| s =~ /%[0-9a-fA-F]{2}/ }
-          filename = Utils.unescape(filename)
+        @parser.on(:header_field) do |b, start, the_end|
+          @header_field << b[start...the_end]
         end
 
-        filename.scrub!
-
-        if filename !~ /\\[^\\"]/
-          filename = filename.gsub(/\\(.)/, '\1')
+        @parser.on(:header_value) do |b, start, the_end|
+          @header_value << b[start...the_end]
         end
 
-        if encoding
-          filename.force_encoding ::Encoding.find(encoding)
-        end
-
-        filename
-      end
-
-      CHARSET = "charset"
-
-      def tag_multipart_encoding(filename, content_type, name, body)
-        name = name.to_s
-        encoding = Encoding::UTF_8
-
-        name.force_encoding(encoding)
-
-        return if filename
-
-        if content_type
-          list         = content_type.split(';')
-          type_subtype = list.first
-          type_subtype.strip!
-          if TEXT_PLAIN == type_subtype
-            rest         = list.drop 1
-            rest.each do |param|
-              k, v = param.split('=', 2)
-              k.strip!
-              v.strip!
-              v = v[1..-2] if v[0] == '"' && v[-1] == '"'
-              encoding = Encoding.find v if k == CHARSET
+        @parser.on(:header_end) do
+          @header_field.downcase!
+          @part.headers[@header_field] = @header_value
+          if @header_field == 'content-disposition'
+            if @header_value =~ /name="([^"]+)"/i
+              @part.name = $1
             end
+            if @header_value =~ /filename="([^;]+)"/i
+              match = $1
+              start = (match.rindex("\\") || -1)+1
+              @part.filename = match[start...(match.length)]
+            end
+          elsif @header_field == 'content-type'
+            @part.mime = @header_value
           end
+          @header_field = ''
+          @header_value = ''
         end
 
-        name.force_encoding(encoding)
-        body.force_encoding(encoding)
-      end
+        @parser.on(:headers_end) do
+          @on_part.call(@part) unless @on_part.nil?
+        end
 
+        @parser.on(:part_data) do |b, start, the_end|
+          @part.emit_data b[start...the_end]
+        end
 
-      def handle_empty_content!(content)
-        if content.nil? || content.empty?
-          raise EOFError
+        @parser.on(:part_end) do
+          @part.emit_end
+        end
+
+        @parser.on(:end) do
+          @ended = true
         end
       end
     end
