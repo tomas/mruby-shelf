@@ -2,13 +2,10 @@ module Shelf
 
   module Multipart
 
-    CONTENT_TYPE = 'CONTENT_TYPE'.freeze
-    # RACK_MULTIPART_BUFFER_SIZE          = 'rack.multipart.buffer_size'
-    # RACK_MULTIPART_TEMPFILE_FACTORY     = 'rack.multipart.tempfile_factory'
-    # RACK_TEMPFILES = 'rack.tempfiles'
-
     CHUNK_SIZE = 8192.freeze
+    CONTENT_TYPE = 'CONTENT_TYPE'.freeze
     BOUNDARY_REGEX = %r|\Amultipart/.*boundary=\"?([^\";,]+)\"?|i
+    # MAX_BODY_LENGTH = (1024 * 1024 * 10).freeze # 10 MB
 
     def self.parse(io, env)
       params = nil
@@ -20,30 +17,33 @@ module Shelf
       parts, reader = {}, Reader.new(boundary)
 
       reader.on_error do |err|
-        on_error_called = true
+        # puts err.inspect
+        raise err
       end
 
       reader.on_part do |part|
-        part_entry = {:part => part, :data => '', :ended => false}
-        parts[part.name] = part_entry
+        parts[part.name] = part
 
         part.on_data do |data|
-          part_entry[:data] << data
+          part.data << data
         end
 
         part.on_end do
-          part_entry[:ended] = true
+          part.ended = true
         end
       end
 
       io.rewind
-      while bytes = io.read(CHUNK_SIZE)
-        # puts "Writing bytes: #{bytes.length}"
+      # bytes_read = 0
+      while bytes = io.read(CHUNK_SIZE) # and bytes_read < MAX_BODY_LENGTH
         reader.write(bytes)
+        # bytes_read += bytes.length
       end
 
       parts
     end
+
+    class NotMultipartError < StandardError; end;
 
     # A low level parser for multipart messages,
     # based on the node-formidable parser.
@@ -290,8 +290,6 @@ module Shelf
       end
     end
 
-    class NotMultipartError < StandardError; end;
-
     # A more high level interface to MultipartParser.
     class Reader
 
@@ -353,12 +351,14 @@ module Shelf
       end
 
       class Part
-        attr_accessor :filename, :headers, :name, :mime
+        attr_accessor :filename, :headers, :name, :mime, :data, :ended
 
         def initialize
           @headers = {}
           @data_callback = nil
           @end_callback = nil
+          @data = ''
+          @ended = false
         end
 
         # Calls the data callback with the given data
