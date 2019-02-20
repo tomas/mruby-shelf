@@ -3,14 +3,8 @@ module Shelf
   module Multipart
 
     CHUNK_SIZE = 8192.freeze
-    CONTENT_TYPE = 'CONTENT_TYPE'.freeze
-    BOUNDARY_REGEX = %r|\Amultipart/.*boundary=\"?([^\";,]+)\"?|i
-    # MAX_BODY_LENGTH = (1024 * 1024 * 10).freeze # 10 MB
 
-    def self.parse(io, env)
-      boundary = env[CONTENT_TYPE][BOUNDARY_REGEX, 1]
-      return nil unless boundary
-
+    def self.parse(io, boundary, max_size)
       parts, reader = {}, Reader.new(boundary)
 
       reader.on_error do |err|
@@ -31,10 +25,10 @@ module Shelf
       end
 
       io.rewind
-      # bytes_read = 0
-      while bytes = io.read(CHUNK_SIZE) # and bytes_read < MAX_BODY_LENGTH
+      bytes_read = 0
+      while bytes = io.read(CHUNK_SIZE) and bytes_read < max_size
         reader.write(bytes)
-        # bytes_read += bytes.length
+        bytes_read += bytes.length
       end
 
       parts

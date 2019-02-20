@@ -29,29 +29,41 @@ module Shelf
     JSON_TYPE      = 'application/json'.freeze
     FORM_DATA_TYPE = 'application/x-www-form-urlencoded'.freeze
     MULTIPART_TYPE = 'multipart/form-data'.freeze
+    BOUNDARY_REGEX = %r|\Amultipart/.*boundary=\"?([^\";,]+)\"?|i
+    MAX_SIZE       = (1024 * 1024 * 100).freeze # 100 MB
 
-    def initialize(app)
+    def initialize(app, opts = {})
       @app = app
+      @max_size = opts[:max_size] || MAX_SIZE
     end
 
     def call(env)
       if env[SHELF_REQUEST_BODY_HASH].nil?
-        env[SHELF_REQUEST_BODY_HASH] = env[RACK_INPUT].nil? ? {} : parse_body(env)
+        env[SHELF_REQUEST_BODY_HASH] = env[RACK_INPUT].nil? ? {} : initialize_parser(env)
       end
       @app.call(env)
     end
 
     private
 
+    def initialize_parser(env)
+      Hash.new do |hash, key|
+        obj = parse_body(env)
+        hash.default_proc = Proc.new { |h,k| obj[k] }
+        obj[key]
+      end
+    end
+
     def parse_body(env)
       stream = env[RACK_INPUT]
       case env[TYPE_HEADER]
       when JSON_TYPE
-        parse_json(stream.read)
+        parse_json(stream.read(@max_size))
       when FORM_DATA_TYPE
-        QueryParser.parse(stream.read)
+        QueryParser.parse(stream.read(@max_size))
       when /^#{MULTIPART_TYPE}/
-        Multipart.parse(stream, env)
+        boundary = env[TYPE_HEADER][BOUNDARY_REGEX, 1]
+        Multipart.parse(stream, boundary, @max_size) if boundary
       end
     end
 

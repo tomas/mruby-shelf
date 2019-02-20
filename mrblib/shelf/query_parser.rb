@@ -25,7 +25,7 @@ module Shelf
   class QueryParser
 
     def self.parse(str, target = {})
-      str.split('&').each do |p|
+      (str || '').split('&').each do |p|
         next if p.empty?
         k, v = p.split('=', 2)
 
