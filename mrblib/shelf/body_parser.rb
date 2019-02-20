@@ -41,7 +41,15 @@ module Shelf
       if env[SHELF_REQUEST_BODY_HASH].nil?
         env[SHELF_REQUEST_BODY_HASH] = env[RACK_INPUT].nil? ? {} : initialize_parser(env)
       end
-      @app.call(env)
+
+      status, headers, body = @app.call(env)
+
+      if env[SHELF_REQUEST_BODY_HASH].keys.any?
+        files = env[SHELF_REQUEST_BODY_HASH].select { |key, obj| obj.respond_to?(:file) && obj.file }
+        files.each { |key, obj| File.unlink(obj.file.path) }
+      end
+
+      [status, headers, body]
     end
 
     private
