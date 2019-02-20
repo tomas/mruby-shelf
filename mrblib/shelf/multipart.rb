@@ -8,12 +8,9 @@ module Shelf
     # MAX_BODY_LENGTH = (1024 * 1024 * 10).freeze # 10 MB
 
     def self.parse(io, env)
-      params = nil
-
       boundary = env[CONTENT_TYPE][BOUNDARY_REGEX, 1]
       return nil unless boundary
 
-      # puts "Initializing with boundary: #{boundary}"
       parts, reader = {}, Reader.new(boundary)
 
       reader.on_error do |err|

@@ -52,8 +52,6 @@ module Shelf
         QueryParser.parse(stream.read)
       when /^#{MULTIPART_TYPE}/
         Multipart.parse(stream, env)
-      else
-        {} # so we don't run this twice 
       end
     end
 
