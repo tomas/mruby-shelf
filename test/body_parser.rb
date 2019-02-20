@@ -86,7 +86,12 @@ multipart_body =  ['--AaB03x',
   _, body = app.call(env_for(body: multipart_body, length: multipart_body.bytesize, type: multipart_type))
 
   assert_equal body['field1'].data, "Joe Blow\r\nalmost tricked you!"
-  assert_equal body['pics'].data, "... contents of file1.txt ...\r"
+  # assert_equal body['pics'].data, "... contents of file1.txt ...\r"
+  assert_equal nil, body['pics'].data
+
+  file = body['pics'].file
+  assert_equal file.class, File
+  assert_equal IO.read(file.path), "... contents of file1.txt ...\r"
 
 =begin
 multipart_body = %{--AaB03x

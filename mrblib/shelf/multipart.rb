@@ -16,11 +16,11 @@ module Shelf
         parts[part.name] = part
 
         part.on_data do |data|
-          part.data << data
+          part.push(data)
         end
 
         part.on_end do
-          part.ended = true
+          part.ended!
         end
       end
 
@@ -33,8 +33,6 @@ module Shelf
 
       parts
     end
-
-    class NotMultipartError < StandardError; end;
 
     # A low level parser for multipart messages,
     # based on the node-formidable parser.
@@ -326,23 +324,10 @@ module Shelf
         end
       end
 
-      # Extracts a boundary value from a Content-Type header.
-      # Note that it is the header value you provide here.
-      # Raises NotMultipartError if content_type is invalid.
-      def self.extract_boundary_value(content_type)
-        if content_type =~ /multipart/i
-          if match = (content_type =~ /boundary=(?:"([^"]+)"|([^;]+))/i)
-            $1 || $2
-          else
-            raise NotMultipartError.new("No multipart boundary")
-          end
-        else
-          raise NotMultipartError.new("Not a multipart content type!")
-        end
-      end
-
       class Part
-        attr_accessor :filename, :headers, :name, :mime, :data, :ended
+        TEMPDIR = '/tmp'
+        attr_accessor :headers, :name, :mime
+        attr_reader :data, :file, :filename, :ended
 
         def initialize
           @headers = {}
@@ -350,6 +335,25 @@ module Shelf
           @end_callback = nil
           @data = ''
           @ended = false
+        end
+
+        def filename=(name)
+          @data = nil
+          @filename = name
+          @file = File.new(TEMPDIR + "/shelf-multipart-#{Time.now.to_i}-#{name}", 'w')
+        end
+
+        def push(data)
+          if @file
+            @file.write(data)
+          else
+            @data << data
+          end
+        end
+
+        def ended!
+          @ended = true
+          @file.close if @file
         end
 
         # Calls the data callback with the given data
