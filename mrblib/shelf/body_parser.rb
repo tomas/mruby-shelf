@@ -29,7 +29,7 @@ module Shelf
     JSON_TYPE      = 'application/json'.freeze
     FORM_DATA_TYPE = 'application/x-www-form-urlencoded'.freeze
     MULTIPART_TYPE = 'multipart/form-data'.freeze
-    BOUNDARY_REGEX = %r|\Amultipart/.*boundary=\"?([^\";,]+)\"?|i
+    BOUNDARY_REGEX = /\Amultipart\/.*boundary=\"?([^\";,]+)\"?/i
     MAX_SIZE       = (1024 * 1024 * 100).freeze # 100 MB
 
     def initialize(app, opts = {})

@@ -34,7 +34,7 @@ MRuby::Gem::Specification.new('mruby-shelf') do |spec|
   spec.add_dependency 'mruby-r3',  mgem: 'mruby-r3'
   spec.add_dependency 'mruby-env', mgem: 'mruby-env'
   spec.add_dependency 'mruby-json', mgem: 'mruby-json'
-  spec.add_dependency 'mruby-regexp-pcre', mgem: 'mruby-regexp-pcre'
+  spec.add_dependency 'mruby-onig-regexp', mgem: 'mruby-onig-regexp'
 
   spec.add_test_dependency 'mruby-input-stream', github: 'takahashim/mruby-input-stream'
   spec.add_test_dependency 'mruby-sprintf', core: 'mruby-sprintf'

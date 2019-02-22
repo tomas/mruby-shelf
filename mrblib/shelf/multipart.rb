@@ -56,8 +56,8 @@ module Shelf
         @state = :start
 
         @boundary_chars = {}
-        @boundary.each_byte do |b|
-          @boundary_chars[b.chr] = true
+        @boundary.each_char do |b|
+          @boundary_chars[b] = true
         end
       end
 
@@ -172,7 +172,7 @@ module Shelf
                 # See http://debuggable.com/posts/parsing-file-uploads-at-500-
                 # mb-s-with-node-js:4c03862e-351c-4faa-bb67-4365cbdd56cb
                 while i + boundary_length <= buffer_length
-                  break if boundary_chars.has_key? buffer[i + boundary_end].chr
+                  break if boundary_chars[buffer[i + boundary_end]]
                   i += boundary_length
                 end
                 c = buffer[i, 1]
@@ -347,7 +347,7 @@ module Shelf
           if @file
             @file.write(data)
           else
-            @data << data
+            @data += data
           end
         end
 
@@ -390,11 +390,11 @@ module Shelf
         end
 
         @parser.on(:header_field) do |b, start, the_end|
-          @header_field << b[start...the_end]
+          @header_field += b[start...the_end]
         end
 
         @parser.on(:header_value) do |b, start, the_end|
-          @header_value << b[start...the_end]
+          @header_value += b[start...the_end]
         end
 
         @parser.on(:header_end) do
