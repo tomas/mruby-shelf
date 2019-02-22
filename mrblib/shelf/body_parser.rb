@@ -65,6 +65,12 @@ module Shelf
 
     private
 
+    def dispose_file(file)
+      File.unlink(file.path)
+    rescue Errno::ENOENT, Errno::EPERM
+      # 
+    end
+
     def self.parse_body_async(env, opts = {})
       Hash.new do |hash, key|
         obj = parse_body(env, opts)
@@ -92,12 +98,6 @@ module Shelf
       JSON.parse(str)
     rescue JSON::ParserError
       {}
-    end
-
-    def self.dispose_file(file)
-      File.unlink(file.path)
-    rescue Errno::ENOENT, Errno::EPERM
-      # 
     end
   end
 end
