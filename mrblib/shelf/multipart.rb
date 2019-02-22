@@ -26,7 +26,7 @@ module Shelf
 
       io.rewind
       bytes_read = 0
-      while bytes = io.read(CHUNK_SIZE) and bytes_read < max_size
+      while bytes_read < max_size and bytes = io.read(CHUNK_SIZE)
         reader.write(bytes)
         bytes_read += bytes.length
       end

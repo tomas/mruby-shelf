@@ -32,18 +32,29 @@ module Shelf
     BOUNDARY_REGEX = /\Amultipart\/.*boundary=\"?([^\";,]+)\"?/i
     MAX_SIZE       = (1024 * 1024 * 100).freeze # 100 MB
 
+    # allow being called directly
+    def self.call(env, opts = {})
+      if env[SHELF_REQUEST_BODY_HASH].nil?
+        env[SHELF_REQUEST_BODY_HASH] = if env[RACK_INPUT].nil?
+          {}
+        else 
+          opts[:sync] ? parse_body(env, opts) : parse_body_async(env, opts)
+        end
+      end
+    end
+
     def initialize(app, opts = {})
-      @app = app
-      @max_size = opts[:max_size] || MAX_SIZE
+      @app, @opts = app, opts
     end
 
     def call(env)
-      if env[SHELF_REQUEST_BODY_HASH].nil?
-        env[SHELF_REQUEST_BODY_HASH] = env[RACK_INPUT].nil? ? {} : initialize_parser(env)
-      end
+      # initialize parser
+      self.class.call(env, @opts)
 
+      # call next handler
       status, headers, body = @app.call(env)
 
+      # and remove files if any were created
       if env[SHELF_REQUEST_BODY_HASH].keys.any?
         files = env[SHELF_REQUEST_BODY_HASH].select { |key, obj| obj.respond_to?(:file) && obj.file }
         files.each { |key, obj| File.unlink(obj.file.path) }
@@ -54,28 +65,30 @@ module Shelf
 
     private
 
-    def initialize_parser(env)
+    def self.parse_body_async(env, opts = {})
       Hash.new do |hash, key|
-        obj = parse_body(env)
+        obj = parse_body(env, opts)
         hash.default_proc = Proc.new { |h,k| obj[k] }
         obj[key]
       end
     end
 
-    def parse_body(env)
+    def self.parse_body(env, opts = {})
+      max_size = opts[:max_size] || MAX_SIZE
       stream = env[RACK_INPUT]
+
       case env[TYPE_HEADER]
       when JSON_TYPE
-        parse_json(stream.read(@max_size))
+        parse_json(stream.read(max_size))
       when FORM_DATA_TYPE
-        QueryParser.parse(stream.read(@max_size))
+        QueryParser.parse(stream.read(max_size))
       when /^#{MULTIPART_TYPE}/
         boundary = env[TYPE_HEADER][BOUNDARY_REGEX, 1]
-        Multipart.parse(stream, boundary, @max_size) if boundary
+        Multipart.parse(stream, boundary, max_size) if boundary
       end
     end
 
-    def parse_json(str)
+    def self.parse_json(str)
       JSON.parse(str)
     rescue JSON::ParserError
       {}
