@@ -38,7 +38,7 @@ module Shelf
         env[SHELF_REQUEST_BODY_HASH] = if env[RACK_INPUT].nil?
           {}
         else 
-          opts[:sync] ? parse_body(env, opts) : parse_body_async(env, opts)
+          opts[:async] ? parse_body_async(env, opts) : parse_body(env, opts)
         end
       end
     end
