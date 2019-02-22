@@ -57,7 +57,7 @@ module Shelf
       # and remove files if any were created
       if env[SHELF_REQUEST_BODY_HASH].keys.any?
         files = env[SHELF_REQUEST_BODY_HASH].select { |key, obj| obj.respond_to?(:file) && obj.file }
-        files.each { |key, obj| File.unlink(obj.file.path) }
+        files.each { |key, obj| dispose_file(obj.file) }
       end
 
       [status, headers, body]
@@ -92,6 +92,12 @@ module Shelf
       JSON.parse(str)
     rescue JSON::ParserError
       {}
+    end
+
+    def self.dispose_file(file)
+      File.unlink(file.path)
+    rescue Errno::ENOENT, Errno::EPERM
+      # 
     end
   end
 end
