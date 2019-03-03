@@ -2,7 +2,7 @@ module Shelf
 
   module Multipart
 
-    CHUNK_SIZE = 8192.freeze
+    CHUNK_SIZE = 16384.freeze
 
     def self.parse(io, boundary, max_size)
       parts, reader = {}, Reader.new(boundary)
@@ -26,11 +26,14 @@ module Shelf
 
       io.rewind
       bytes_read = 0
-      while bytes_read < max_size and bytes = io.read(CHUNK_SIZE)
+      outbuf = ''
+
+      while bytes_read < max_size and bytes = io.read(CHUNK_SIZE, outbuf)
         reader.write(bytes)
         bytes_read += bytes.length
       end
 
+      outbuf = nil
       parts
     end
 
